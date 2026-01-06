@@ -1,13 +1,15 @@
-"""Power Sources Data Collector for SFML Stats. @zara
+# ******************************************************************************
+# @copyright (C) 2025 Zara-Toorox - SFML Stats
+# * This program is protected by a Proprietary Non-Commercial License.
+# 1. Personal and Educational use only.
+# 2. COMMERCIAL USE AND AI TRAINING ARE STRICTLY PROHIBITED.
+# 3. Clear attribution to "Zara-Toorox" is required.
+# * Full license terms: https://github.com/Zara-Toorox/sfml-stats/blob/main/LICENSE
+# ******************************************************************************
+
+"""Power Sources Data Collector for SFML Stats.
 
 Collects power flow data every few minutes for the Power Sources chart.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-Copyright (C) 2025 Zara-Toorox
 """
 from __future__ import annotations
 
@@ -291,11 +293,22 @@ class PowerSourcesCollector:
         # Calculate autarky and self-consumption
         if today["consumption_kwh"] > 0:
             self_produced = today["solar_to_house_kwh"] + today["battery_to_house_kwh"]
-            today["autarky_percent"] = min(100, (self_produced / today["consumption_kwh"]) * 100)
+            # Autarkie = Eigenproduktion / Gesamtverbrauch (begrenzt auf 0-100%)
+            autarky = (self_produced / today["consumption_kwh"]) * 100
+            today["autarky_percent"] = max(0, min(100, autarky))
 
-        total_produced = today["solar_total_kwh"]
+        # Self-consumption: Anteil der Solarproduktion, der NICHT ins Netz exportiert wurde
+        # Berechnung: (Solarproduktion - Export) / Solarproduktion * 100
+        # Verwende solar_yield_sensor_kwh wenn verfügbar (genauer), sonst solar_total_kwh
+        total_produced = today.get("solar_yield_sensor_kwh") or today["solar_total_kwh"]
         if total_produced > 0:
-            today["self_consumption_percent"] = min(100, (today["consumption_kwh"] / total_produced) * 100)
+            # Eigenverbrauch = was selbst genutzt wurde (direkt + Batterie)
+            # = Solarproduktion - Export (falls Export-Sensor verfügbar)
+            # Fallback: solar_to_house + solar_to_battery (= alles was nicht exportiert wurde)
+            solar_self_consumed = today["solar_to_house_kwh"] + today["solar_to_battery_kwh"]
+            # Begrenze auf sinnvolle Werte (0-100%)
+            self_consumption = (solar_self_consumed / total_produced) * 100
+            today["self_consumption_percent"] = max(0, min(100, self_consumption))
 
         # Track battery SOC statistics
         if data_point.get("battery_soc") is not None:
@@ -320,6 +333,13 @@ class PowerSourcesCollector:
             if "peak_battery_power_w" not in today:
                 today["peak_battery_power_w"] = 0.0
             today["peak_battery_power_w"] = max(today.get("peak_battery_power_w", 0.0), battery_power)
+
+        # Track peak home consumption power
+        if data_point.get("home_consumption") is not None:
+            consumption_power = data_point["home_consumption"]
+            if "peak_consumption_w" not in today:
+                today["peak_consumption_w"] = 0.0
+            today["peak_consumption_w"] = max(today.get("peak_consumption_w", 0.0), consumption_power)
 
         today["last_updated"] = now.isoformat()
         today["data_points_count"] += 1
@@ -349,6 +369,7 @@ class PowerSourcesCollector:
             "soc_readings_count": 0,
             "soc_readings_sum": 0.0,
             "peak_battery_power_w": 0.0,
+            "peak_consumption_w": 0.0,
             "data_points_count": 0,
             "last_updated": None,
         }

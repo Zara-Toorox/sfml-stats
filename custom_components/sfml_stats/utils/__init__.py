@@ -7,9 +7,22 @@
 # * Full license terms: https://github.com/Zara-Toorox/sfml-stats/blob/main/LICENSE
 # ******************************************************************************
 
-"""Services for SFML Stats integration."""
-from .daily_aggregator import DailyEnergyAggregator
-from .billing_calculator import BillingCalculator
-from .monthly_tariff_manager import MonthlyTariffManager
+"""Utilities module for SFML Stats."""
+from __future__ import annotations
 
-__all__ = ["DailyEnergyAggregator", "BillingCalculator", "MonthlyTariffManager"]
+from .cache import TTLCache, get_json_cache
+from .file_ops import (
+    read_json_safe,
+    write_json_safe,
+    append_to_file_safe,
+    ensure_directory,
+)
+
+__all__ = [
+    "TTLCache",
+    "get_json_cache",
+    "read_json_safe",
+    "write_json_safe",
+    "append_to_file_safe",
+    "ensure_directory",
+]

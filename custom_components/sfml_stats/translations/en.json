@@ -112,7 +112,8 @@
           "billing_start_day": "Billing Start Day (1-28)",
           "billing_start_month": "Billing Start Month",
           "billing_price_mode": "Price Mode",
-          "billing_fixed_price": "Fixed Price (ct/kWh)",
+          "billing_fixed_price": "Fixed Import Price (ct/kWh)",
+          "feed_in_tariff": "Feed-in Tariff (ct/kWh)",
           "sensor_smartmeter_import_kwh": "Grid Import Meter (kWh total)",
           "sensor_smartmeter_export_kwh": "Grid Export Meter (kWh total)",
           "sensor_solar_yield_total_kwh": "Solar Yield Meter (kWh total)"
@@ -121,10 +122,21 @@
           "billing_start_day": "Day of month when your billing year starts. Example: 15 = the 15th of the month.",
           "billing_start_month": "Month when your billing year starts. Example: January = billing year starts on selected day in January.",
           "billing_price_mode": "Dynamic = hourly spot prices from Grid Price Monitor integration. Fixed = your fixed tariff price.",
-          "billing_fixed_price": "Your electricity tariff price in cents per kWh. Only relevant in fixed price mode. Example: 35.0 for 35 ct/kWh.",
+          "billing_fixed_price": "Your electricity tariff price for IMPORT in cents per kWh. Only relevant in fixed price mode. Example: 35.0 for 35 ct/kWh.",
+          "feed_in_tariff": "Your feed-in tariff in cents per kWh. What you receive for exported electricity from your grid operator. Example: 8.1 ct/kWh.",
           "sensor_smartmeter_import_kwh": "Absolute meter reading for grid import in kWh. MUST be 'total_increasing' (always increasing). Example: sensor.power_meter_total_consumption with value like 12345.67 kWh.",
           "sensor_smartmeter_export_kwh": "Absolute meter reading for grid export in kWh. MUST be 'total_increasing'. Example: sensor.power_meter_total_export with value like 5432.10 kWh.",
           "sensor_solar_yield_total_kwh": "Absolute total yield of PV system in kWh. MUST be 'total_increasing'. Example: sensor.inverter_total_yield with value like 15000.00 kWh."
+        }
+      },
+      "panel_group_names": {
+        "title": "Panel Group Names",
+        "description": "Override the auto-generated panel group names from Solar Forecast ML.\n\nFormat: OriginalName=NewName (comma separated)\n\nExample: {example}",
+        "data": {
+          "panel_group_names_input": "Name Mapping"
+        },
+        "data_description": {
+          "panel_group_names_input": "Mapping of panel group names. Format: Gruppe 1=String South, Gruppe 2=String West. Leave empty for default names."
         }
       }
     },
@@ -149,7 +161,8 @@
           "battery": "Battery & Consumption",
           "statistics": "Statistics Sensors",
           "panels": "PV Panel Sensors",
-          "billing": "Electricity Bill & Billing"
+          "billing": "Electricity Bill & Billing",
+          "panel_group_names": "Panel Group Names"
         }
       },
       "general": {
@@ -263,7 +276,8 @@
           "billing_start_day": "Billing Start Day (1-28)",
           "billing_start_month": "Billing Start Month",
           "billing_price_mode": "Price Mode",
-          "billing_fixed_price": "Fixed Price (ct/kWh)",
+          "billing_fixed_price": "Fixed Import Price (ct/kWh)",
+          "feed_in_tariff": "Feed-in Tariff (ct/kWh)",
           "sensor_smartmeter_import_kwh": "Grid Import Meter (kWh total)",
           "sensor_smartmeter_export_kwh": "Grid Export Meter (kWh total)",
           "sensor_solar_yield_total_kwh": "Solar Yield Meter (kWh total)"
@@ -272,10 +286,21 @@
           "billing_start_day": "Day of month when your billing period starts (1-28).",
           "billing_start_month": "Month when your billing period starts.",
           "billing_price_mode": "Dynamic = hourly spot prices. Fixed = your tariff price.",
-          "billing_fixed_price": "Your electricity tariff price in cents per kWh.",
+          "billing_fixed_price": "Your electricity tariff price for IMPORT in cents per kWh.",
+          "feed_in_tariff": "Your feed-in tariff in cents per kWh. What you receive for exported electricity (e.g. 8.1 ct).",
           "sensor_smartmeter_import_kwh": "Meter reading grid import in kWh (total_increasing).",
           "sensor_smartmeter_export_kwh": "Meter reading grid export in kWh (total_increasing).",
           "sensor_solar_yield_total_kwh": "Total solar yield in kWh (total_increasing)."
+        }
+      },
+      "panel_group_names": {
+        "title": "Panel Group Names",
+        "description": "Override the auto-generated panel group names from Solar Forecast ML.\n\nFormat: OriginalName=NewName (comma separated)\n\nExample: {example}",
+        "data": {
+          "panel_group_names_input": "Name Mapping"
+        },
+        "data_description": {
+          "panel_group_names_input": "Mapping of panel group names. Format: Gruppe 1=String South, Gruppe 2=String West. Leave empty for default names."
         }
       }
     }

@@ -1,23 +1,19 @@
-"""Billing calculator for energy balance using Recorder data. @zara
+# ******************************************************************************
+# @copyright (C) 2025 Zara-Toorox - SFML Stats
+# * This program is protected by a Proprietary Non-Commercial License.
+# 1. Personal and Educational use only.
+# 2. COMMERCIAL USE AND AI TRAINING ARE STRICTLY PROHIBITED.
+# 3. Clear attribution to "Zara-Toorox" is required.
+# * Full license terms: https://github.com/Zara-Toorox/sfml-stats/blob/main/LICENSE
+# ******************************************************************************
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-Copyright (C) 2025 Zara-Toorox
-"""
+"""Billing calculator for energy balance using Recorder data."""
 from __future__ import annotations
 
+import calendar
 import logging
+import threading
+from collections import deque
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,17 +32,48 @@ from ..const import (
     PRICE_MODE_FIXED,
     DEFAULT_BILLING_FIXED_PRICE,
     CONF_SENSOR_SOLAR_POWER,
+    CONF_SENSOR_SOLAR_TO_HOUSE,
     CONF_SENSOR_SOLAR_TO_BATTERY,
+    CONF_SENSOR_BATTERY_TO_HOUSE,
     CONF_SENSOR_GRID_TO_BATTERY,
     CONF_SENSOR_HOME_CONSUMPTION,
     CONF_SENSOR_SMARTMETER_IMPORT,
     CONF_SENSOR_SMARTMETER_EXPORT,
+    LOG_BUFFER_MAX_SIZE,
+    RIEMANN_MAX_GAP_HOURS,
+    BILLING_CACHE_TTL_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-_LOG_FILE: Path | None = None
-_LOG_BUFFER: list[str] = []
+
+class _ThreadSafeLogBuffer:
+    """Thread-safe log buffer with maximum size limit. @zara"""
+
+    def __init__(self, max_size: int = LOG_BUFFER_MAX_SIZE) -> None:
+        """Initialize the buffer. @zara"""
+        self._lock = threading.Lock()
+        self._buffer: deque[str] = deque(maxlen=max_size)
+
+    def append(self, msg: str) -> None:
+        """Append a message to the buffer. @zara"""
+        with self._lock:
+            self._buffer.append(msg)
+
+    def flush(self) -> list[str]:
+        """Get all messages and clear the buffer. @zara"""
+        with self._lock:
+            items = list(self._buffer)
+            self._buffer.clear()
+            return items
+
+    def __len__(self) -> int:
+        """Return buffer length. @zara"""
+        with self._lock:
+            return len(self._buffer)
+
+
+_LOG_BUFFER = _ThreadSafeLogBuffer()
 
 
 def _log(msg: str, *args, level: str = "info") -> None:
@@ -79,7 +106,7 @@ class BillingCalculator:
         self._log_file = config_path / "sfml_stats" / "logs" / "billing_calculator.log"
         self._billing_cache: dict[str, Any] | None = None
         self._cache_timestamp: datetime | None = None
-        self._cache_ttl_seconds = 60
+        self._cache_ttl_seconds = BILLING_CACHE_TTL_SECONDS
 
     def update_config(self, new_config: dict[str, Any]) -> None:
         """Update cached configuration and invalidate billing cache. @zara"""
@@ -127,12 +154,21 @@ class BillingCalculator:
         if isinstance(billing_start_month, str):
             billing_start_month = int(billing_start_month)
 
+        # Validiere Tag (max 28 für Februar, sonst je nach Monat)
+        import calendar
         today = date.today()
         current_year = today.year
+
+        # Korrigiere ungültige Tage (z.B. 31. Februar -> 28. Februar)
+        max_day = calendar.monthrange(current_year, billing_start_month)[1]
+        billing_start_day = min(billing_start_day, max_day)
 
         billing_start = date(current_year, billing_start_month, billing_start_day)
 
         if billing_start > today:
+            # Prüfe auch das vorherige Jahr auf gültige Tage
+            max_day_prev = calendar.monthrange(current_year - 1, billing_start_month)[1]
+            billing_start_day = min(billing_start_day, max_day_prev)
             billing_start = date(current_year - 1, billing_start_month, billing_start_day)
 
         return billing_start
@@ -182,7 +218,7 @@ class BillingCalculator:
             prev_time = None
             prev_value = None
 
-            max_gap_hours = 4.0
+            max_gap_hours = RIEMANN_MAX_GAP_HOURS
 
             for state in entity_states:
                 try:
@@ -193,15 +229,20 @@ class BillingCalculator:
                         delta_hours = (current_time - prev_time).total_seconds() / 3600.0
 
                         if delta_hours <= max_gap_hours:
+                            # Standard Links-Riemann: Verwende vorherigen Wert für das Intervall
                             kwh = (prev_value / 1000.0) * delta_hours
                             total_kwh += max(0, kwh)
                             sample_count += 1
                         else:
+                            # Bei großen Lücken: Trapezregel als Kompromiss
+                            # Dies ist eine Approximation - bei Lücken durch Sensorausfälle
+                            # ist weder Links-Riemann noch Trapezregel ideal, aber Trapezregel
+                            # liefert oft bessere Ergebnisse bei unbekanntem Verlauf
                             avg_value = (prev_value + current_value) / 2.0
                             kwh = (avg_value / 1000.0) * delta_hours
                             total_kwh += max(0, kwh)
                             sample_count += 1
-                            _log("Large gap (%.1fh) for %s, using average value",
+                            _log("Large gap (%.1fh) for %s, using trapezoid rule",
                                  delta_hours, entity_id)
 
                     prev_time = current_time
@@ -210,18 +251,16 @@ class BillingCalculator:
                 except (ValueError, TypeError):
                     continue
 
+            # Letztes Intervall bis zur aktuellen Zeit
             if prev_time is not None and prev_value is not None:
                 delta_hours = (end_time - prev_time).total_seconds() / 3600.0
-                if delta_hours > 0 and delta_hours <= max_gap_hours:
+                if delta_hours > 0:
                     kwh = (prev_value / 1000.0) * delta_hours
                     total_kwh += max(0, kwh)
                     sample_count += 1
-                elif delta_hours > max_gap_hours:
-                    kwh = (prev_value / 1000.0) * delta_hours
-                    total_kwh += max(0, kwh)
-                    sample_count += 1
-                    _log("Final interval large (%.1fh) for %s - sensor may be stale",
-                         delta_hours, entity_id)
+                    if delta_hours > max_gap_hours:
+                        _log("Final interval large (%.1fh) for %s - sensor may be stale",
+                             delta_hours, entity_id)
 
             return total_kwh, sample_count
 
@@ -231,14 +270,13 @@ class BillingCalculator:
 
     async def _flush_logs(self) -> None:
         """Write buffered logs to file. @zara"""
-        global _LOG_BUFFER
-        if _LOG_BUFFER:
+        log_lines = _LOG_BUFFER.flush()
+        if log_lines:
             try:
                 self._log_file.parent.mkdir(parents=True, exist_ok=True)
                 async with aiofiles.open(self._log_file, "a", encoding="utf-8") as f:
-                    for line in _LOG_BUFFER:
+                    for line in log_lines:
                         await f.write(line + "\n")
-                _LOG_BUFFER.clear()
             except Exception:
                 pass
 
@@ -268,9 +306,11 @@ class BillingCalculator:
             "smartmeter_import": config.get(CONF_SENSOR_SMARTMETER_IMPORT),
             "smartmeter_export": config.get(CONF_SENSOR_SMARTMETER_EXPORT),
             "solar_power": config.get(CONF_SENSOR_SOLAR_POWER),
+            "solar_to_house": config.get(CONF_SENSOR_SOLAR_TO_HOUSE),
             "solar_to_battery": config.get(CONF_SENSOR_SOLAR_TO_BATTERY),
+            "battery_to_house": config.get(CONF_SENSOR_BATTERY_TO_HOUSE),
             "grid_to_battery": config.get(CONF_SENSOR_GRID_TO_BATTERY),
-            "wr_to_house": config.get(CONF_SENSOR_HOME_CONSUMPTION),
+            "home_consumption": config.get(CONF_SENSOR_HOME_CONSUMPTION),
         }
 
         _log("Configured sensors:")
@@ -294,27 +334,68 @@ class BillingCalculator:
         solar_power = flows.get("solar_power", 0.0)
         solar_to_battery = flows.get("solar_to_battery", 0.0)
         grid_to_battery = flows.get("grid_to_battery", 0.0)
-        wr_to_house = flows.get("wr_to_house", 0.0)
 
         _log("=" * 60)
         _log("CALCULATIONS:")
 
+        # Prüfe ob Batterie-Sensoren konfiguriert sind
+        has_battery = bool(
+            config.get(CONF_SENSOR_BATTERY_TO_HOUSE) or
+            config.get(CONF_SENSOR_SOLAR_TO_BATTERY) or
+            config.get(CONF_SENSOR_GRID_TO_BATTERY)
+        )
+        _log("  Battery configured: %s", has_battery)
+
+        # Solar direkt zum Haus: Sensor bevorzugen, sonst berechnen
+        if config.get(CONF_SENSOR_SOLAR_TO_HOUSE):
+            solar_direct = flows.get("solar_to_house", 0.0)
+            _log("  Solar->House = %.2f kWh (from sensor)", solar_direct)
+        else:
+            solar_direct = max(0, solar_power - solar_to_battery)
+            _log("  Solar->House = Solar(%.2f) - Solar->Battery(%.2f) = %.2f kWh (calculated)",
+                 solar_power, solar_to_battery, solar_direct)
+
+        # Batterie zum Haus: Sensor bevorzugen, sonst 0 wenn keine Batterie
+        if config.get(CONF_SENSOR_BATTERY_TO_HOUSE):
+            battery_to_house = flows.get("battery_to_house", 0.0)
+            _log("  Battery->House = %.2f kWh (from sensor)", battery_to_house)
+        elif has_battery:
+            # Batterie existiert aber kein direkter Sensor - kann nicht sicher berechnet werden
+            battery_to_house = 0.0
+            _log("  Battery->House = 0 kWh (no direct sensor, cannot calculate safely)")
+        else:
+            # Keine Batterie konfiguriert
+            battery_to_house = 0.0
+            _log("  Battery->House = 0 kWh (no battery configured)")
+
+        # Eigenverbrauch (WR → Haus) = Solar direkt + Batterie-Entladung
+        wr_to_house = solar_direct + battery_to_house
+        _log("  WR->House = Solar->House(%.2f) + Battery->House(%.2f) = %.2f kWh",
+             solar_direct, battery_to_house, wr_to_house)
+
+        # Netz zum Haus
         grid_to_house = max(0, smartmeter_import - grid_to_battery)
         _log("  Grid->House = Smartmeter(%.2f) - Grid->Battery(%.2f) = %.2f kWh",
              smartmeter_import, grid_to_battery, grid_to_house)
 
-        home_consumption = wr_to_house + grid_to_house
-        _log("  Home consumption = WR->House(%.2f) + Grid->House(%.2f) = %.2f kWh",
-             wr_to_house, grid_to_house, home_consumption)
+        # Hausverbrauch: Sensor bevorzugen, sonst berechnen
+        if config.get(CONF_SENSOR_HOME_CONSUMPTION):
+            home_consumption_sensor = flows.get("home_consumption", 0.0)
+            # Plausibilitätsprüfung: Sensor-Wert sollte >= berechneter Eigenverbrauch sein
+            home_consumption_calculated = wr_to_house + grid_to_house
+            if home_consumption_sensor >= wr_to_house * 0.9:  # 10% Toleranz
+                home_consumption = home_consumption_sensor
+                _log("  Home consumption = %.2f kWh (from sensor)", home_consumption)
+            else:
+                home_consumption = home_consumption_calculated
+                _log("  Home consumption = %.2f kWh (calculated, sensor value %.2f implausible)",
+                     home_consumption, home_consumption_sensor)
+        else:
+            home_consumption = wr_to_house + grid_to_house
+            _log("  Home consumption = WR->House(%.2f) + Grid->House(%.2f) = %.2f kWh (calculated)",
+                 wr_to_house, grid_to_house, home_consumption)
 
-        solar_direct = max(0, solar_power - solar_to_battery)
-        _log("  Solar direct = Solar(%.2f) - Solar->Battery(%.2f) = %.2f kWh",
-             solar_power, solar_to_battery, solar_direct)
-
-        battery_to_house = max(0, wr_to_house - solar_direct)
-        _log("  Battery->House = WR->House(%.2f) - Solar direct(%.2f) = %.2f kWh",
-             wr_to_house, solar_direct, battery_to_house)
-
+        # Batterie-Ladung
         battery_total_charge = solar_to_battery + grid_to_battery
         _log("  Battery charge = Solar->Battery(%.2f) + Grid->Battery(%.2f) = %.2f kWh",
              solar_to_battery, grid_to_battery, battery_total_charge)
@@ -330,6 +411,7 @@ class BillingCalculator:
         _log("  Grid cost = %.2f kWh * %.2f ct = %.2f EUR",
              smartmeter_import, avg_price, grid_cost_eur)
 
+        # Ersparnis basiert auf Eigenverbrauch (was nicht vom Netz bezogen wurde)
         savings_eur = (wr_to_house * avg_price) / 100
         _log("  Savings = %.2f kWh * %.2f ct = %.2f EUR",
              wr_to_house, avg_price, savings_eur)
@@ -343,9 +425,19 @@ class BillingCalculator:
              wr_to_house, home_consumption, autarkie)
 
         days_elapsed = (today - billing_start).days + 1
-        billing_end_theoretical = date(
-            billing_start.year + 1, billing_start.month, billing_start.day
-        ) - timedelta(days=1)
+
+        # Berechne theoretisches Abrechnungsende (1 Jahr nach Start - 1 Tag)
+        # Behandle Schaltjahr-Fehler (z.B. Start am 29. Februar)
+        next_year = billing_start.year + 1
+        target_month = billing_start.month
+        target_day = billing_start.day
+
+        # Korrigiere ungültige Tage für das Zieljahr (z.B. 29. Feb in Nicht-Schaltjahr)
+        max_day_next_year = calendar.monthrange(next_year, target_month)[1]
+        target_day = min(target_day, max_day_next_year)
+
+        billing_end_theoretical = date(next_year, target_month, target_day) - timedelta(days=1)
+
         days_total = (billing_end_theoretical - billing_start).days + 1
 
         result = {
