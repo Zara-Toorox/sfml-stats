@@ -7,7 +7,7 @@
 # * Full license terms: https://github.com/Zara-Toorox/sfml-stats/blob/main/LICENSE
 # ******************************************************************************
 
-"""Config flow for SFML Stats integration."""
+"""Config flow for SFML Stats integration. @zara"""
 from __future__ import annotations
 
 import logging
@@ -84,26 +84,30 @@ from .const import (
     DEFAULT_FEED_IN_TARIFF,
     CONF_PANEL_GROUP_NAMES,
 )
+from .inverter_profiles import (
+    InverterDiscovery,
+    InverterProfile,
+    INVERTER_PROFILES,
+    get_profile_choices,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+# Configuration key for selected profile
+CONF_INVERTER_PROFILE: str = "inverter_profile"
 
 
 def _is_raspberry_pi() -> bool:
     """Check if the system is running on a Raspberry Pi. @zara"""
     try:
-        # Überprüfung 1: CPU-Architektur
         machine = platform.machine().lower()
         if machine in ('armv7l', 'aarch64', 'armv6l'):
-            # Könnte ein Raspberry Pi sein, weitere Überprüfung
             try:
                 with open('/proc/cpuinfo', 'r') as f:
                     cpuinfo = f.read().lower()
-                    # Raspberry Pi hat typischerweise BCM-Chips
                     if 'raspberry pi' in cpuinfo or 'bcm' in cpuinfo:
                         return True
             except (FileNotFoundError, PermissionError):
-                # Wenn /proc/cpuinfo nicht lesbar ist, nur auf Architektur basieren
-                # Vorsichtig sein und ARM-Systeme als potenziell Raspberry Pi behandeln
                 _LOGGER.warning(
                     "Cannot read /proc/cpuinfo, but ARM architecture detected (%s). "
                     "Assuming Raspberry Pi for safety.", machine
@@ -112,20 +116,17 @@ def _is_raspberry_pi() -> bool:
         return False
     except Exception as e:
         _LOGGER.error("Error detecting Raspberry Pi: %s", e)
-        # Im Fehlerfall: lieber sicher sein
         return False
 
 
 def _is_proxmox() -> bool:
     """Check if the system is running on Proxmox VE. @zara"""
     try:
-        # Proxmox-spezifische Dateien/Verzeichnisse prüfen
         proxmox_indicators = [
-            '/etc/pve',  # Proxmox VE Konfigurationsverzeichnis
-            '/usr/bin/pvesh',  # Proxmox API Shell
-            '/usr/bin/pveversion',  # Proxmox Version Tool
+            '/etc/pve',
+            '/usr/bin/pvesh',
+            '/usr/bin/pveversion',
         ]
-
         for indicator in proxmox_indicators:
             try:
                 from pathlib import Path
@@ -134,8 +135,6 @@ def _is_proxmox() -> bool:
                     return True
             except Exception:
                 pass
-
-        # Zusätzlich: Überprüfung der Kernel-Version auf "pve"
         try:
             import os
             kernel_version = os.uname().release.lower()
@@ -144,7 +143,6 @@ def _is_proxmox() -> bool:
                 return True
         except Exception:
             pass
-
         return False
     except Exception as e:
         _LOGGER.error("Error detecting Proxmox: %s", e)
@@ -162,11 +160,7 @@ def get_entity_selector(domain: str = "sensor") -> selector.EntitySelector:
 
 
 def get_entity_selector_optional() -> selector.Selector:
-    """Create a text selector that allows clearing/removing the entity. @zara
-
-    Uses a text selector to allow empty values.
-    This solves the issue where users cannot delete wrongly configured entities.
-    """
+    """Create a text selector that allows clearing/removing the entity. @zara"""
     return selector.TextSelector(
         selector.TextSelectorConfig(
             type=selector.TextSelectorType.TEXT,
@@ -175,211 +169,232 @@ def get_entity_selector_optional() -> selector.Selector:
 
 
 class SFMLStatsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for SFML Stats. @zara"""
+    """Handle a config flow for SFML Stats. @zara
 
-    VERSION = 2
+    Simplified setup with auto-discovery:
+    Step 1: System detection + profile selection
+    Step 2: Review detected sensors (can adjust)
+    Step 3: Settings (billing, theme, etc.)
+    """
+
+    VERSION = 3  # Incremented for new flow
 
     def __init__(self) -> None:
         """Initialize the config flow. @zara"""
         self._data: dict[str, Any] = {}
+        self._discovery: InverterDiscovery | None = None
+        self._detected_profiles: list[InverterProfile] = []
+        self._selected_profile: InverterProfile | None = None
+        self._sensor_mapping: dict[str, str | None] = {}
 
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Handle the initial step - Basic Settings. @zara"""
+        """Handle the initial step - System Detection. @zara"""
         errors: dict[str, str] = {}
 
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
 
-        # Überprüfung: Raspberry Pi ist nicht unterstützt
+        # Platform checks
         if _is_raspberry_pi():
             _LOGGER.error(
-                "Installation on Raspberry Pi is not supported due to performance limitations "
-                "with matplotlib and chart generation."
+                "Installation on Raspberry Pi is not supported due to performance limitations."
             )
             return self.async_abort(reason="raspberry_pi_not_supported")
 
-        # Warnung: Proxmox VE wird nicht empfohlen
         if _is_proxmox():
             _LOGGER.warning(
-                "Installation on Proxmox VE detected. Please note that running Home Assistant "
-                "directly on Proxmox VE (instead of in a VM/LXC) is not recommended and may "
-                "cause performance issues with matplotlib chart generation."
+                "Installation on Proxmox VE detected. Running HA directly on Proxmox is not recommended."
             )
             return self.async_abort(reason="proxmox_not_recommended")
 
+        # Run auto-discovery
+        self._discovery = InverterDiscovery(self.hass)
+        self._detected_profiles = await self._discovery.async_discover()
+
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_energy_flow()
+            selected_id = user_input.get(CONF_INVERTER_PROFILE, "manual")
+            self._selected_profile = INVERTER_PROFILES.get(selected_id)
+            self._data[CONF_INVERTER_PROFILE] = selected_id
+
+            if self._selected_profile and selected_id != "manual":
+                # Get auto-mapped sensors
+                self._sensor_mapping = self._discovery.get_sensor_mapping(
+                    self._selected_profile
+                )
+            else:
+                self._sensor_mapping = {}
+
+            return await self.async_step_sensors()
+
+        # Build profile choices with detection status
+        choices = {}
+        detected_ids = [p.id for p in self._detected_profiles]
+
+        # Add detected profiles first (with checkmark)
+        for profile in self._detected_profiles:
+            choices[profile.id] = f"✓ {profile.name} (erkannt)"
+
+        # Add non-detected profiles
+        for profile_id, profile in INVERTER_PROFILES.items():
+            if profile_id not in detected_ids and profile_id != "manual":
+                choices[profile_id] = f"  {profile.name}"
+
+        # Add manual option at the end
+        choices["manual"] = "🔧 Manuelle Konfiguration"
+
+        # Determine default selection
+        default_profile = "manual"
+        if self._detected_profiles:
+            default_profile = self._detected_profiles[0].id
 
         return self.async_show_form(
             step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_INVERTER_PROFILE,
+                    default=default_profile,
+                ): vol.In(choices),
+            }),
+            errors=errors,
+            description_placeholders={
+                "detected_count": str(len(self._detected_profiles)),
+            },
+        )
+
+    async def async_step_sensors(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Handle step 2 - Review and adjust sensors. @zara"""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # Store sensor configuration
+            self._data.update(user_input)
+            return await self.async_step_settings()
+
+        # Pre-fill with auto-detected values
+        defaults = self._sensor_mapping
+
+        # Core sensors (always shown)
+        schema_dict = {
+            vol.Optional(
+                CONF_SENSOR_SOLAR_POWER,
+                default=defaults.get(CONF_SENSOR_SOLAR_POWER, ""),
+            ): get_entity_selector_optional(),
+            vol.Optional(
+                CONF_SENSOR_HOME_CONSUMPTION,
+                default=defaults.get(CONF_SENSOR_HOME_CONSUMPTION, ""),
+            ): get_entity_selector_optional(),
+            vol.Optional(
+                CONF_SENSOR_GRID_TO_HOUSE,
+                default=defaults.get(CONF_SENSOR_GRID_TO_HOUSE, ""),
+            ): get_entity_selector_optional(),
+            vol.Optional(
+                CONF_SENSOR_HOUSE_TO_GRID,
+                default=defaults.get(CONF_SENSOR_HOUSE_TO_GRID, ""),
+            ): get_entity_selector_optional(),
+            vol.Optional(
+                CONF_SENSOR_SOLAR_YIELD_DAILY,
+                default=defaults.get(CONF_SENSOR_SOLAR_YIELD_DAILY, ""),
+            ): get_entity_selector_optional(),
+        }
+
+        # Battery sensors (if profile has battery or manual)
+        has_battery = (
+            self._selected_profile is None
+            or self._selected_profile.has_battery
+            or self._selected_profile.id == "manual"
+        )
+        if has_battery:
+            schema_dict.update({
+                vol.Optional(
+                    CONF_SENSOR_BATTERY_SOC,
+                    default=defaults.get(CONF_SENSOR_BATTERY_SOC, ""),
+                ): get_entity_selector_optional(),
+                vol.Optional(
+                    CONF_SENSOR_BATTERY_POWER,
+                    default=defaults.get(CONF_SENSOR_BATTERY_POWER, ""),
+                ): get_entity_selector_optional(),
+                vol.Optional(
+                    CONF_SENSOR_BATTERY_TO_HOUSE,
+                    default=defaults.get(CONF_SENSOR_BATTERY_TO_HOUSE, ""),
+                ): get_entity_selector_optional(),
+            })
+
+        # Weather entity
+        schema_dict[vol.Optional(
+            CONF_WEATHER_ENTITY,
+            default=defaults.get(CONF_WEATHER_ENTITY, ""),
+        )] = get_entity_selector_optional()
+
+        # Count auto-filled sensors
+        filled_count = sum(1 for v in defaults.values() if v)
+
+        return self.async_show_form(
+            step_id="sensors",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={
+                "filled_count": str(filled_count),
+                "profile_name": self._selected_profile.name if self._selected_profile else "Manual",
+            },
+        )
+
+    async def async_step_settings(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Handle step 3 - General settings. @zara"""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self._data.update(user_input)
+            # Set empty panel group names mapping
+            self._data[CONF_PANEL_GROUP_NAMES] = {}
+            return self.async_create_entry(
+                title=NAME,
+                data=self._data,
+            )
+
+        months = {
+            1: "Januar", 2: "Februar", 3: "März", 4: "April",
+            5: "Mai", 6: "Juni", 7: "Juli", 8: "August",
+            9: "September", 10: "Oktober", 11: "November", 12: "Dezember"
+        }
+        days = {i: str(i) for i in range(1, 29)}
+
+        return self.async_show_form(
+            step_id="settings",
             data_schema=vol.Schema({
                 vol.Required(
                     CONF_AUTO_GENERATE,
                     default=DEFAULT_AUTO_GENERATE,
                 ): bool,
                 vol.Required(
-                    CONF_GENERATE_WEEKLY,
-                    default=DEFAULT_GENERATE_WEEKLY,
-                ): bool,
-                vol.Required(
-                    CONF_GENERATE_MONTHLY,
-                    default=DEFAULT_GENERATE_MONTHLY,
-                ): bool,
-                vol.Required(
                     CONF_THEME,
                     default=DEFAULT_THEME,
                 ): vol.In({
-                    THEME_DARK: "Dark",
-                    THEME_LIGHT: "Light",
+                    THEME_DARK: "Dark Mode",
+                    THEME_LIGHT: "Light Mode",
                 }),
-            }),
-            errors=errors,
-        )
-
-    async def async_step_energy_flow(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Handle step 2 - Energy Flow Sensors. @zara"""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_battery()
-
-        return self.async_show_form(
-            step_id="energy_flow",
-            data_schema=vol.Schema({
-                vol.Optional(CONF_SENSOR_SOLAR_POWER): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_SOLAR_TO_HOUSE): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_SOLAR_TO_BATTERY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_GRID_TO_HOUSE): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_GRID_TO_BATTERY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_HOUSE_TO_GRID): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_SMARTMETER_IMPORT): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_SMARTMETER_EXPORT): get_entity_selector(),
-            }),
-            errors=errors,
-        )
-
-    async def async_step_battery(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Handle step 3 - Battery Sensors. @zara"""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_statistics()
-
-        return self.async_show_form(
-            step_id="battery",
-            data_schema=vol.Schema({
-                vol.Optional(CONF_SENSOR_BATTERY_SOC): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_BATTERY_POWER): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_BATTERY_TO_HOUSE): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_BATTERY_TO_GRID): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_HOME_CONSUMPTION): get_entity_selector(),
-            }),
-            errors=errors,
-        )
-
-    async def async_step_statistics(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Handle step 4 - Statistics Sensors. @zara"""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_panels()
-
-        return self.async_show_form(
-            step_id="statistics",
-            data_schema=vol.Schema({
-                vol.Optional(CONF_SENSOR_SOLAR_YIELD_DAILY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_GRID_IMPORT_DAILY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_GRID_IMPORT_YEARLY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_BATTERY_CHARGE_SOLAR_DAILY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_BATTERY_CHARGE_GRID_DAILY): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_PRICE_TOTAL): get_entity_selector(),
-                vol.Optional(CONF_WEATHER_ENTITY): get_entity_selector("weather"),
-            }),
-            errors=errors,
-        )
-
-    async def async_step_panels(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Handle step 5 - Panel Sensors (optional). @zara"""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_billing()
-
-        return self.async_show_form(
-            step_id="panels",
-            data_schema=vol.Schema({
-                vol.Optional(CONF_PANEL1_NAME, default=DEFAULT_PANEL1_NAME): str,
-                vol.Optional(CONF_SENSOR_PANEL1_POWER): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_PANEL1_MAX_TODAY): get_entity_selector(),
-                vol.Optional(CONF_PANEL2_NAME, default=DEFAULT_PANEL2_NAME): str,
-                vol.Optional(CONF_SENSOR_PANEL2_POWER): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_PANEL2_MAX_TODAY): get_entity_selector(),
-                vol.Optional(CONF_PANEL3_NAME, default=DEFAULT_PANEL3_NAME): str,
-                vol.Optional(CONF_SENSOR_PANEL3_POWER): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_PANEL3_MAX_TODAY): get_entity_selector(),
-                vol.Optional(CONF_PANEL4_NAME, default=DEFAULT_PANEL4_NAME): str,
-                vol.Optional(CONF_SENSOR_PANEL4_POWER): get_entity_selector(),
-                vol.Optional(CONF_SENSOR_PANEL4_MAX_TODAY): get_entity_selector(),
-            }),
-            errors=errors,
-        )
-
-    async def async_step_billing(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Handle step 6 - Billing / Energy Balance Configuration. @zara"""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_panel_group_names()
-
-        months = {
-            1: "January", 2: "February", 3: "March", 4: "April",
-            5: "May", 6: "June", 7: "July", 8: "August",
-            9: "September", 10: "October", 11: "November", 12: "December"
-        }
-
-        days = {i: str(i) for i in range(1, 29)}
-
-        return self.async_show_form(
-            step_id="billing",
-            data_schema=vol.Schema({
-                vol.Required(
-                    CONF_BILLING_START_DAY,
-                    default=DEFAULT_BILLING_START_DAY,
-                ): vol.In(days),
                 vol.Required(
                     CONF_BILLING_START_MONTH,
                     default=DEFAULT_BILLING_START_MONTH,
                 ): vol.In(months),
                 vol.Required(
+                    CONF_BILLING_START_DAY,
+                    default=DEFAULT_BILLING_START_DAY,
+                ): vol.In(days),
+                vol.Required(
                     CONF_BILLING_PRICE_MODE,
                     default=DEFAULT_BILLING_PRICE_MODE,
                 ): vol.In({
-                    PRICE_MODE_DYNAMIC: "Dynamic price (from Grid Price Monitor)",
-                    PRICE_MODE_FIXED: "Fixed price (manual entry)",
+                    PRICE_MODE_DYNAMIC: "Dynamischer Preis (Grid Price Monitor)",
+                    PRICE_MODE_FIXED: "Fester Preis",
                 }),
                 vol.Optional(
                     CONF_BILLING_FIXED_PRICE,
@@ -409,50 +424,6 @@ class SFMLStatsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_panel_group_names(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
-        """Handle step 7 - Panel Group Names (override Solar Forecast ML names). @zara"""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            # Parse the input: "Gruppe 1=String Süd, Gruppe 2=String West"
-            names_mapping = {}
-            raw_input = user_input.get("panel_group_names_input", "").strip()
-            if raw_input:
-                for entry in raw_input.split(","):
-                    entry = entry.strip()
-                    if "=" in entry:
-                        parts = entry.split("=", 1)
-                        old_name = parts[0].strip()
-                        new_name = parts[1].strip()
-                        if old_name and new_name:
-                            names_mapping[old_name] = new_name
-
-            self._data[CONF_PANEL_GROUP_NAMES] = names_mapping
-            return self.async_create_entry(
-                title=NAME,
-                data=self._data,
-            )
-
-        # Show example format
-        return self.async_show_form(
-            step_id="panel_group_names",
-            data_schema=vol.Schema({
-                vol.Optional("panel_group_names_input", default=""): selector.TextSelector(
-                    selector.TextSelectorConfig(
-                        type=selector.TextSelectorType.TEXT,
-                        multiline=True,
-                    )
-                ),
-            }),
-            errors=errors,
-            description_placeholders={
-                "example": "Gruppe 1=String Süd, Gruppe 2=String West"
-            },
-        )
-
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -474,18 +445,7 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
         user_input: dict[str, Any],
         sensor_keys: list[str],
     ) -> dict[str, Any]:
-        """Process sensor input and update config entry data. @zara
-
-        Helper method to reduce code duplication in sensor configuration steps.
-        Removes keys with empty values and updates keys with new values.
-
-        Args:
-            user_input: User input from form.
-            sensor_keys: List of configuration keys to process.
-
-        Returns:
-            Updated configuration data.
-        """
+        """Process sensor input and update config entry data. @zara"""
         new_data = {**self._config_entry.data}
         for key in sensor_keys:
             value = user_input.get(key)
@@ -499,16 +459,7 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
         self,
         sensor_keys: list[str],
     ) -> vol.Schema:
-        """Build schema for sensor configuration form. @zara
-
-        Helper method to build consistent sensor configuration schemas.
-
-        Args:
-            sensor_keys: List of configuration keys for the schema.
-
-        Returns:
-            Voluptuous schema for the form.
-        """
+        """Build schema for sensor configuration form. @zara"""
         current = self._config_entry.data
         schema_dict = {}
         for key in sensor_keys:
@@ -524,7 +475,55 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
         """Manage the options - Menu. @zara"""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["general", "energy_flow", "battery", "statistics", "panels", "billing", "panel_group_names"],
+            menu_options=[
+                "general",
+                "energy_flow",
+                "battery",
+                "statistics",
+                "panels",
+                "billing",
+                "panel_group_names",
+                "redetect",
+            ],
+        )
+
+    async def async_step_redetect(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Re-run auto-detection for sensors. @zara"""
+        if user_input is not None:
+            selected_id = user_input.get(CONF_INVERTER_PROFILE)
+            if selected_id and selected_id != "manual":
+                profile = INVERTER_PROFILES.get(selected_id)
+                if profile:
+                    discovery = InverterDiscovery(self.hass)
+                    await discovery.async_discover()
+                    mapping = discovery.get_sensor_mapping(profile)
+
+                    # Update config with new mappings (only non-empty)
+                    new_data = {**self._config_entry.data}
+                    for key, value in mapping.items():
+                        if value:
+                            new_data[key] = value
+
+                    self.hass.config_entries.async_update_entry(
+                        self._config_entry, data=new_data
+                    )
+
+            return self.async_create_entry(title="", data={})
+
+        # Build profile choices
+        choices = get_profile_choices()
+
+        return self.async_show_form(
+            step_id="redetect",
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_INVERTER_PROFILE,
+                    default=self._config_entry.data.get(CONF_INVERTER_PROFILE, "manual"),
+                ): vol.In(choices),
+            }),
         )
 
     async def async_step_general(
@@ -662,10 +661,7 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
         )
 
     def _build_panel_schema(self) -> vol.Schema:
-        """Build schema for panel configuration form. @zara
-
-        Panels have a special schema with name fields (str) and sensor fields.
-        """
+        """Build schema for panel configuration form. @zara"""
         current = self._config_entry.data
         panel_configs = [
             (CONF_PANEL1_NAME, DEFAULT_PANEL1_NAME, CONF_SENSOR_PANEL1_POWER, CONF_SENSOR_PANEL1_MAX_TODAY),
@@ -698,9 +694,9 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
         current = self._config_entry.data
 
         months = {
-            1: "January", 2: "February", 3: "March", 4: "April",
-            5: "May", 6: "June", 7: "July", 8: "August",
-            9: "September", 10: "October", 11: "November", 12: "December"
+            1: "Januar", 2: "Februar", 3: "März", 4: "April",
+            5: "Mai", 6: "Juni", 7: "Juli", 8: "August",
+            9: "September", 10: "Oktober", 11: "November", 12: "Dezember"
         }
 
         days = {i: str(i) for i in range(1, 29)}
@@ -718,8 +714,8 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
                 CONF_BILLING_PRICE_MODE,
                 default=current.get(CONF_BILLING_PRICE_MODE, DEFAULT_BILLING_PRICE_MODE),
             ): vol.In({
-                PRICE_MODE_DYNAMIC: "Dynamic price (from Grid Price Monitor)",
-                PRICE_MODE_FIXED: "Fixed price (manual entry)",
+                PRICE_MODE_DYNAMIC: "Dynamischer Preis (Grid Price Monitor)",
+                PRICE_MODE_FIXED: "Fester Preis",
             }),
             vol.Optional(
                 CONF_BILLING_FIXED_PRICE,
@@ -756,9 +752,8 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """Manage panel group name mappings (override Solar Forecast ML names). @zara"""
+        """Manage panel group name mappings. @zara"""
         if user_input is not None:
-            # Parse the input: "Gruppe 1=String Süd, Gruppe 2=String West"
             names_mapping = {}
             raw_input = user_input.get("panel_group_names_input", "").strip()
             if raw_input:
@@ -779,7 +774,6 @@ class SFMLStatsOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data={})
 
         current = self._config_entry.data
-        # Convert dict back to string format for editing
         existing_mapping = current.get(CONF_PANEL_GROUP_NAMES, {})
         if existing_mapping and isinstance(existing_mapping, dict):
             default_value = ", ".join(f"{k}={v}" for k, v in existing_mapping.items())
