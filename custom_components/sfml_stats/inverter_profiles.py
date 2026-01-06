@@ -414,6 +414,51 @@ INVERTER_PROFILES: dict[str, InverterProfile] = {
         has_battery=False,
         priority=5,  # Lower priority, often combined with inverter
     ),
+    "anker_solix": InverterProfile(
+        id="anker_solix",
+        name="Anker Solix",
+        manufacturer="Anker",
+        description="Anker Solix Solarbank, Balkonkraftwerk (E1600, 2 Pro, X1)",
+        detection_domains=["anker_solix"],
+        sensor_patterns={
+            CONF_SENSOR_SOLAR_POWER: [
+                r"sensor\..*solarbank.*_solar_power",
+                r"sensor\..*solix.*_pv_power",
+                r"sensor\..*solarbank.*_photovoltaic_power",
+                r"sensor\.anker_.*_solar_power",
+            ],
+            CONF_SENSOR_HOME_CONSUMPTION: [
+                r"sensor\..*solarbank.*_home_load",
+                r"sensor\..*solix.*_load_power",
+                r"sensor\..*solarbank.*_output_power",
+            ],
+            CONF_SENSOR_HOUSE_TO_GRID: [
+                r"sensor\..*solarbank.*_to_grid",
+                r"sensor\..*solix.*_grid_export",
+            ],
+            CONF_SENSOR_BATTERY_SOC: [
+                r"sensor\..*solarbank.*_state_of_charge",
+                r"sensor\..*solarbank.*_battery_soc",
+                r"sensor\..*solix.*_soc",
+                r"sensor\.anker_.*_battery_percentage",
+            ],
+            CONF_SENSOR_BATTERY_POWER: [
+                r"sensor\..*solarbank.*_battery_power",
+                r"sensor\..*solarbank.*_charge_power",
+            ],
+            CONF_SENSOR_BATTERY_TO_HOUSE: [
+                r"sensor\..*solarbank.*_discharge_power",
+                r"sensor\..*solarbank.*_battery_discharge",
+            ],
+            CONF_SENSOR_SOLAR_YIELD_DAILY: [
+                r"sensor\..*solarbank.*_daily_yield",
+                r"sensor\..*solarbank.*_energy_today",
+                r"sensor\..*solix.*_daily_production",
+            ],
+        },
+        has_battery=True,
+        priority=10,
+    ),
     "manual": InverterProfile(
         id="manual",
         name="Manual Configuration",
