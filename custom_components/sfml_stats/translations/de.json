@@ -37,6 +37,16 @@
           "weather_entity": "Home Assistant Wetter-Entity (z.B. weather.home)"
         }
       },
+      "helpers": {
+        "title": "Fehlende kWh-Sensoren",
+        "description": "Es fehlen {missing_count} tägliche kWh-Sensoren:\n\n**{missing_sensors}**\n\nDiese können aus deinen Watt-Sensoren erstellt werden.\n\n**So geht's:**\n1. Gehe zu Einstellungen → Geräte & Dienste → Helfer\n2. Erstelle einen \"Riemann-Summen-Integral\" Sensor (W → kWh)\n3. Erstelle einen \"Verbrauchszähler\" mit täglichem Reset\n\nOder füge folgendes zu configuration.yaml hinzu:\n\n```yaml\n{yaml_config}\n```",
+        "data": {
+          "show_yaml": "Ich habe die YAML-Konfiguration kopiert"
+        },
+        "data_description": {
+          "show_yaml": "Bestätige um fortzufahren. Du kannst die Sensoren auch später erstellen."
+        }
+      },
       "settings": {
         "title": "Einstellungen",
         "description": "Grundeinstellungen für SFML Stats.",

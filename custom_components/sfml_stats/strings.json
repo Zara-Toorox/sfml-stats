@@ -26,6 +26,13 @@
           "weather_entity": "Weather Entity"
         }
       },
+      "helpers": {
+        "title": "Missing kWh Sensors",
+        "description": "Missing {missing_count} daily sensors: {missing_sensors}\n\nAdd to configuration.yaml:\n\n{yaml_config}",
+        "data": {
+          "show_yaml": "I have copied the configuration"
+        }
+      },
       "settings": {
         "title": "Settings",
         "description": "Basic settings for SFML Stats.",

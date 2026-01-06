@@ -37,6 +37,16 @@
           "weather_entity": "Home Assistant weather entity (e.g. weather.home)"
         }
       },
+      "helpers": {
+        "title": "Missing kWh Sensors",
+        "description": "There are {missing_count} missing daily kWh sensors:\n\n**{missing_sensors}**\n\nThese can be created from your Watt sensors.\n\n**How to:**\n1. Go to Settings → Devices & Services → Helpers\n2. Create a \"Riemann sum integral\" sensor (W → kWh)\n3. Create a \"Utility meter\" with daily reset\n\nOr add the following to configuration.yaml:\n\n```yaml\n{yaml_config}\n```",
+        "data": {
+          "show_yaml": "I have copied the YAML configuration"
+        },
+        "data_description": {
+          "show_yaml": "Confirm to continue. You can also create the sensors later."
+        }
+      },
       "settings": {
         "title": "Settings",
         "description": "Basic settings for SFML Stats.",

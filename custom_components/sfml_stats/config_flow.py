@@ -90,6 +90,11 @@ from .inverter_profiles import (
     INVERTER_PROFILES,
     get_profile_choices,
 )
+from .sensor_helpers import (
+    SensorHelperManager,
+    SensorHelperDefinition,
+    check_and_suggest_helpers,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -186,6 +191,8 @@ class SFMLStatsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._detected_profiles: list[InverterProfile] = []
         self._selected_profile: InverterProfile | None = None
         self._sensor_mapping: dict[str, str | None] = {}
+        self._missing_helpers: list[SensorHelperDefinition] = []
+        self._helper_yaml: str = ""
 
     async def async_step_user(
         self,
@@ -274,7 +281,8 @@ class SFMLStatsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Store sensor configuration
             self._data.update(user_input)
-            return await self.async_step_settings()
+            # Check for missing kWh sensors
+            return await self.async_step_helpers()
 
         # Pre-fill with auto-detected values
         defaults = self._sensor_mapping
@@ -341,6 +349,46 @@ class SFMLStatsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "filled_count": str(filled_count),
                 "profile_name": self._selected_profile.name if self._selected_profile else "Manual",
+            },
+        )
+
+    async def async_step_helpers(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Handle step 3 - Check for missing kWh sensors. @zara"""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # User acknowledged, continue to settings
+            return await self.async_step_settings()
+
+        # Check for missing daily sensors
+        self._missing_helpers, self._helper_yaml = await check_and_suggest_helpers(
+            self.hass,
+            self._data,
+        )
+
+        # If no missing sensors, skip to settings
+        if not self._missing_helpers:
+            return await self.async_step_settings()
+
+        # Show helper suggestion
+        missing_names = [h.friendly_name for h in self._missing_helpers]
+
+        return self.async_show_form(
+            step_id="helpers",
+            data_schema=vol.Schema({
+                vol.Optional(
+                    "show_yaml",
+                    default=False,
+                ): bool,
+            }),
+            errors=errors,
+            description_placeholders={
+                "missing_count": str(len(self._missing_helpers)),
+                "missing_sensors": ", ".join(missing_names),
+                "yaml_config": self._helper_yaml,
             },
         )
 
